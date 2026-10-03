@@ -8,6 +8,9 @@
 //! --listen unix://PATH` does) as Supervisor's desktop and Android apps speak
 //! with the separate program. The code-mode host listens on a loopback port
 //! that only the App Server is told about.
+// The App Server's request handling is one deep async fn; its layout needs the
+// recursion limit codex-app-server's own executable sets.
+#![recursion_limit = "256"]
 
 pub mod connection;
 

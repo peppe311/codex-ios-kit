@@ -1,15 +1,16 @@
 name: iOS kit
 
 # Builds codex-rs/ios-kit, the Codex App Server and code-mode host as a static
-# library for iOS devices and the arm64 simulator, and keeps them as
-# CodexKit.xcframework (see IOS_KIT.md).
+# library for iOS devices and the arm64 simulator, keeps them as
+# CodexKit.xcframework and, for main, publishes them as a release with the
+# libraries the app must link (see IOS_KIT.md).
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios-kit-${{ github.ref }}
@@ -33,7 +34,8 @@ jobs:
           rustup default 1.95.0
           rustc --version
           xcodebuild -version
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restored and saved apart, so a failed build still keeps what it compiled.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -50,6 +52,22 @@ jobs:
       - name: Build for the simulator
         working-directory: codex-rs
         run: cargo build --locked --release -p codex-ios-kit --lib --target aarch64-apple-ios-sim
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            codex-rs/target
+          key: ios-kit-${{ hashFiles('codex-rs/Cargo.lock') }}-${{ github.sha }}
+      - name: Libraries the app links
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          cargo rustc --locked --release -p codex-ios-kit --lib --crate-type staticlib --target aarch64-apple-ios -- --print native-static-libs 2>&1 \
+            | grep 'native-static-libs:' | sed 's/.*native-static-libs: //' | tee "$RUNNER_TEMP/native-static-libs.txt"
+          test -s "$RUNNER_TEMP/native-static-libs.txt"
       - name: Assemble CodexKit.xcframework
         run: |
           set -euo pipefail
@@ -64,9 +82,24 @@ jobs:
             -output "$RUNNER_TEMP/CodexKit.xcframework"
           (cd "$RUNNER_TEMP" && zip -qry CodexKit.xcframework.zip CodexKit.xcframework)
           ls -l "$RUNNER_TEMP/CodexKit.xcframework.zip"
+          shasum -a 256 "$RUNNER_TEMP/CodexKit.xcframework.zip" | tee "$RUNNER_TEMP/CodexKit.xcframework.zip.sha256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: CodexKit.xcframework
-          path: ${{ runner.temp }}/CodexKit.xcframework.zip
+          path: |
+            ${{ runner.temp }}/CodexKit.xcframework.zip
+            ${{ runner.temp }}/CodexKit.xcframework.zip.sha256
+            ${{ runner.temp }}/native-static-libs.txt
           if-no-files-found: error
           retention-days: 30
+      - name: Publish the release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="ios-kit-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "CodexKit for iOS, build ${GITHUB_RUN_NUMBER}" \
+            --notes "Codex rust-v0.160.0 with the changes in IOS_KIT.md, built from ${GITHUB_SHA}. SHA-256: $(cut -d' ' -f1 "$RUNNER_TEMP/CodexKit.xcframework.zip.sha256"). Link with: $(cat "$RUNNER_TEMP/native-static-libs.txt")" \
+            "$RUNNER_TEMP/CodexKit.xcframework.zip" "$RUNNER_TEMP/CodexKit.xcframework.zip.sha256" "$RUNNER_TEMP/native-static-libs.txt"
