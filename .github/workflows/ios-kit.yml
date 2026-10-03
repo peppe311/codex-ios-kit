@@ -37,6 +37,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The history back to the cached build's commit.
+          fetch-depth: 0
       - name: Rust for iOS
         run: |
           rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
@@ -55,6 +57,30 @@ jobs:
           restore-keys: |
             ios-kit-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock') }}-
             ios-kit-${{ matrix.target }}-
+      # Cargo rebuilds a workspace crate whose files are newer than its cached
+      # build, and a checkout dates every file now. Files the cached build
+      # already compiled are dated long ago and only those changed since its
+      # commit now, so only changed crates compile again; without a record of
+      # that commit, everything is compiled again.
+      - name: Date the sources by what changed since the cached build
+        shell: python3 {0}
+        run: |
+          import os, subprocess, time
+          files = [name for name in subprocess.run(["git", "ls-files", "-z", "codex-rs"], capture_output=True,
+                   text=True, check=True).stdout.split("\0") if name and os.path.isfile(name)]
+          changed = files
+          marker = "codex-rs/target/ios-kit-source"
+          if os.path.exists(marker):
+              base = open(marker).read().strip()
+              diff = subprocess.run(["git", "diff", "--name-only", base, "HEAD", "--", "codex-rs"], capture_output=True, text=True)
+              if diff.returncode == 0:
+                  changed = [name for name in diff.stdout.splitlines() if os.path.isfile(name)]
+                  for name in files:
+                      os.utime(name, (946684800, 946684800))
+          now = time.time()
+          for name in changed:
+              os.utime(name, (now, now))
+          print(f"{len(changed)} of {len(files)} files are newer than the cached build")
       - name: Build the static library
         working-directory: codex-rs
         run: |
@@ -73,6 +99,8 @@ jobs:
           grep -q '_codex_ios_kit_start' "$RUNNER_TEMP/symbols.txt" || { echo "codex_ios_kit_start is missing from $library" >&2; exit 1; }
           cp "$library" "$RUNNER_TEMP/kit/"
           ls -l "$RUNNER_TEMP/kit"
+          # The commit this cache now holds a complete build of.
+          git rev-parse HEAD > target/ios-kit-source
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always()
         with:
