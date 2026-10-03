@@ -36,6 +36,7 @@ struct Args {
     model: Option<String>,
     effort: Option<String>,
     cwd: Option<PathBuf>,
+    c_api: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -51,6 +52,7 @@ fn parse_args() -> Result<Args> {
             "--model" => args.model = Some(value()?),
             "--effort" => args.effort = Some(value()?),
             "--cwd" => args.cwd = Some(PathBuf::from(value()?)),
+            "--c-api" => args.c_api = true,
             other => bail!("unknown argument {other}"),
         }
     }
@@ -88,6 +90,9 @@ fn main() -> Result<()> {
         started.socket_path.display(),
         started.code_mode_host
     );
+    if args.c_api {
+        return c_api_session();
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -96,6 +101,66 @@ fn main() -> Result<()> {
 
 fn toml_string(path: &std::path::Path) -> String {
     serde_json::to_string(&path.display().to_string()).unwrap_or_default()
+}
+
+/// Talks to the App Server through the kit's C API, as the iOS app does:
+/// initialize, model/list, then disconnect and wait for CLOSED.
+fn c_api_session() -> Result<()> {
+    use std::ffi::CStr;
+    use std::ffi::c_char;
+    use std::ffi::c_void;
+    use std::sync::mpsc as std_mpsc;
+
+    unsafe extern "C" fn received(context: *mut c_void, kind: i32, text: *const c_char) {
+        // SAFETY: the context is the leaked sender below and text lives during the call.
+        let sender = unsafe { &*(context as *const std_mpsc::Sender<(i32, String)>) };
+        let text = unsafe { CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned();
+        let _ = sender.send((kind, text));
+    }
+    let (sender, receiver) = std_mpsc::channel::<(i32, String)>();
+    // The probe keeps the context for its whole life, as the app keeps it until CLOSED.
+    let context = Box::into_raw(Box::new(sender)) as *mut c_void;
+    let id = codex_ios_kit::connection::connect(received, context);
+    if id == 0 {
+        bail!("Codex has not started");
+    }
+    let send = |message: Value| codex_ios_kit::connection::send(id, message.to_string());
+    let wait_for = |wanted: i64| -> Result<Value> {
+        loop {
+            let (kind, text) = receiver.recv_timeout(Duration::from_secs(60))?;
+            if kind == codex_ios_kit::connection::CLOSED {
+                bail!("closed: {text}");
+            }
+            let value: Value = serde_json::from_str(&text)?;
+            if value["id"].as_i64() == Some(wanted) && value.get("method").is_none() {
+                return Ok(value);
+            }
+        }
+    };
+    send(json!({"id": 1, "method": "initialize", "params": {
+        "clientInfo": {"name": "supervisor-ios-probe", "version": "0.1.0"},
+        "capabilities": {"experimentalApi": true}}}));
+    println!("probe (C API): initialize → {}", wait_for(1)?["result"]);
+    send(json!({"method": "initialized"}));
+    send(json!({"id": 2, "method": "model/list", "params": {}}));
+    let models = wait_for(2)?;
+    println!(
+        "probe (C API): model/list → {} models",
+        models["result"]["data"].as_array().map_or(0, Vec::len)
+    );
+    codex_ios_kit::connection::disconnect(id);
+    loop {
+        let (kind, text) = receiver.recv_timeout(Duration::from_secs(10))?;
+        if kind == codex_ios_kit::connection::CLOSED {
+            println!("probe (C API): closed: {text}");
+            if codex_ios_kit::connection::send(id, "{}".into()) {
+                bail!("a closed connection accepted a message");
+            }
+            return Ok(());
+        }
+    }
 }
 
 /// A JSON-RPC client of the App Server over its socket, as the iOS app's.

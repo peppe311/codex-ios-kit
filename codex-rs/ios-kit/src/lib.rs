@@ -9,6 +9,8 @@
 //! with the separate program. The code-mode host listens on a loopback port
 //! that only the App Server is told about.
 
+pub mod connection;
+
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::ffi::c_char;
@@ -17,6 +19,7 @@ use std::net::SocketAddr;
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
@@ -68,6 +71,13 @@ pub struct Started {
 /// process-wide.
 static STARTED: Mutex<Option<Started>> = Mutex::new(None);
 
+/// The runtime Codex runs on and its socket, for the app's connections.
+static RUNTIME: OnceLock<(tokio::runtime::Handle, PathBuf)> = OnceLock::new();
+
+pub(crate) fn runtime() -> Option<(tokio::runtime::Handle, PathBuf)> {
+    RUNTIME.get().cloned()
+}
+
 /// Starts the code-mode host and the App Server on a thread of their own and
 /// returns once the App Server listens on its socket.
 pub fn start(options: StartOptions) -> Result<Started> {
@@ -98,6 +108,7 @@ pub fn start(options: StartOptions) -> Result<Started> {
     let host_url = format!("grpc://127.0.0.1:{host_port}");
     let host_transport = CodeModeHostTransport::Grpc(url::Url::parse(&host_url)?);
     let overrides = options.config_overrides.clone();
+    let connections_socket = options.socket_path.clone();
     let (failed_tx, failed_rx) = mpsc::channel::<String>();
     // Codex's own threads have 16 MiB stacks; its deepest futures overflow the
     // default 2 MiB of a Tokio worker.
@@ -117,6 +128,7 @@ pub fn start(options: StartOptions) -> Result<Started> {
                     return;
                 }
             };
+            let _ = RUNTIME.set((runtime.handle().clone(), connections_socket));
             let outcome = runtime.block_on(async move {
                 let host_listen = host_url.clone();
                 tokio::spawn(async move {
