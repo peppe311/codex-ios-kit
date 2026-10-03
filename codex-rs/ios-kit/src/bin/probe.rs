@@ -4,7 +4,10 @@
 //! its Unix socket.
 //!
 //! codex-ios-kit-probe --home DIR [--no-exec] [--login] [--prompt TEXT]
-//!     [--model ID] [--effort LEVEL] [--cwd DIR]
+//!     [--model ID] [--effort LEVEL] [--cwd DIR] [--c-api] [--serve] [--js SOURCE]
+//!
+//! `--serve` keeps Codex running for another client of its socket. `--js` runs
+//! one code-mode cell in V8 as the kit starts it, without its compilers.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -37,6 +40,8 @@ struct Args {
     effort: Option<String>,
     cwd: Option<PathBuf>,
     c_api: bool,
+    serve: bool,
+    js: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -53,6 +58,8 @@ fn parse_args() -> Result<Args> {
             "--effort" => args.effort = Some(value()?),
             "--cwd" => args.cwd = Some(PathBuf::from(value()?)),
             "--c-api" => args.c_api = true,
+            "--serve" => args.serve = true,
+            "--js" => args.js = Some(value()?),
             other => bail!("unknown argument {other}"),
         }
     }
@@ -92,6 +99,19 @@ fn main() -> Result<()> {
     );
     if args.c_api {
         return c_api_session();
+    }
+    if let Some(source) = args.js {
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(run_js(source));
+    }
+    if args.serve {
+        // Keeps Codex running for a client of the socket, such as the page's host in a test.
+        println!("probe: serving");
+        loop {
+            std::thread::park();
+        }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -469,4 +489,35 @@ fn forbid_exec() -> Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn forbid_exec() -> Result<()> {
     bail!("--no-exec works on Linux only")
+}
+
+/// Runs one code-mode cell, as a model's `exec` call does, in the V8 the kit
+/// started without its compilers.
+async fn run_js(source: String) -> Result<()> {
+    use codex_code_mode_runtime::ExecuteRequest;
+    use codex_code_mode_runtime::InProcessCodeModeSession;
+    use codex_code_mode_runtime::NoopCodeModeSessionDelegate;
+
+    let session = InProcessCodeModeSession::new();
+    let started = session
+        .execute(
+            ExecuteRequest {
+                tool_call_id: "probe-js".into(),
+                enabled_tools: Vec::new(),
+                source,
+                yield_time_ms: Some(10_000),
+                max_output_tokens: None,
+            },
+            Arc::new(NoopCodeModeSessionDelegate),
+            None,
+        )
+        .await
+        .map_err(|error| anyhow!(error))?;
+    let response = started
+        .initial_response()
+        .await
+        .map_err(|error| anyhow!(error))?;
+    println!("probe: js → {}", serde_json::to_string(&response)?);
+    session.shutdown().await.map_err(|error| anyhow!(error))?;
+    Ok(())
 }

@@ -3687,6 +3687,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "webpki-roots",
  "windows-sys 0.52.0",
  "zstd",
 ]
@@ -3741,6 +3742,7 @@ dependencies = [
  "codex-arg0",
  "codex-async-utils",
  "codex-code-mode-host",
+ "codex-code-mode-runtime",
  "codex-config",
  "codex-protocol",
  "codex-utils-absolute-path",

@@ -257,6 +257,10 @@ fn build_rustls_client_config(
         );
     }
     let _ = root_store.add_parsable_certificates(certs);
+    // iOS gives apps no readable store of root certificates, so the native roots are empty
+    // there; trust the Mozilla roots that reqwest's rustls backend also ships.
+    #[cfg(target_os = "ios")]
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
     if let Some(bundle) = bundle {
         let certificates = bundle.load_certificates()?;

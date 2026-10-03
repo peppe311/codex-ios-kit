@@ -19,6 +19,7 @@ codex-app-server = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-async-utils = { workspace = true }
 codex-code-mode-host = { path = "../code-mode-host" }
+codex-code-mode-runtime = { workspace = true }
 codex-config = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }

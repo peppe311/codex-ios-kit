@@ -38,6 +38,7 @@ use codex_app_server::RemoteControlStartupMode;
 use codex_app_server::run_main_with_transport_options;
 use codex_arg0::Arg0DispatchPaths;
 use codex_async_utils::THREAD_STACK_SIZE_BYTES;
+use codex_code_mode_runtime::V8JitMode;
 use codex_config::LoaderOverrides;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -48,6 +49,15 @@ use serde_json::json;
 
 /// How long the App Server may take to listen on its socket.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// iOS refuses to start programs, so the tools that run commands are off and
+/// no shell is snapshotted. They follow the app's overrides, which cannot turn
+/// them back on.
+const NO_PROGRAMS: [&str; 3] = [
+    "features.shell_tool=false",
+    "features.unified_exec=false",
+    "features.shell_snapshot=false",
+];
 
 /// What the host app tells the kit when it starts Codex.
 #[derive(Debug, Clone, Deserialize)]
@@ -107,10 +117,17 @@ pub fn start(options: StartOptions) -> Result<Started> {
     // the host app does not read or change the environment meanwhile.
     unsafe { std::env::set_var("CODEX_HOME", &options.codex_home) };
 
+    // iOS lets an app no memory it may both write and run, so V8 interprets
+    // the models' JavaScript instead of compiling it. This comes before the
+    // code-mode host, which would otherwise start V8 with its compilers.
+    codex_code_mode_runtime::initialize_v8(V8JitMode::Disabled)
+        .map_err(|error| anyhow!("V8 could not start: {error}"))?;
+
     let host_port = free_loopback_port()?;
     let host_url = format!("grpc://127.0.0.1:{host_port}");
     let host_transport = CodeModeHostTransport::Grpc(url::Url::parse(&host_url)?);
-    let overrides = options.config_overrides.clone();
+    let mut overrides = options.config_overrides.clone();
+    overrides.extend(NO_PROGRAMS.iter().map(|value| (*value).to_owned()));
     let connections_socket = options.socket_path.clone();
     let (failed_tx, failed_rx) = mpsc::channel::<String>();
     // Codex's own threads have 16 MiB stacks; its deepest futures overflow the

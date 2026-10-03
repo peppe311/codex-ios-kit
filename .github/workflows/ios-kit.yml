@@ -1,9 +1,9 @@
 name: iOS kit
 
 # Builds codex-rs/ios-kit, the Codex App Server and code-mode host as a static
-# library for iOS devices and the arm64 simulator, keeps them as
-# CodexKit.xcframework and, for main, publishes them as a release with the
-# libraries the app must link (see IOS_KIT.md).
+# library for iOS devices and the arm64 simulator, on two macOS runners at
+# once, keeps them as CodexKit.xcframework and, for main, publishes them as a
+# release with the libraries the app must link (see IOS_KIT.md).
 on:
   push:
     branches: [main]
@@ -18,19 +18,26 @@ concurrency:
 
 jobs:
   build:
-    name: CodexKit.xcframework
+    name: Build for ${{ matrix.target }}
+    strategy:
+      matrix:
+        target: [aarch64-apple-ios, aarch64-apple-ios-sim]
     runs-on: macos-26
     timeout-minutes: 240
     env:
       IPHONEOS_DEPLOYMENT_TARGET: '16.0'
       CARGO_TERM_COLOR: never
+      # The app's linker removes what it does not use, so a build without
+      # cross-crate LTO or line tables is smaller to carry and much faster.
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_PROFILE_RELEASE_DEBUG: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Rust for iOS
         run: |
-          rustup toolchain install 1.95.0 --profile minimal --target aarch64-apple-ios --target aarch64-apple-ios-sim
+          rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
           rustup default 1.95.0
           rustc --version
           xcodebuild -version
@@ -42,16 +49,26 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             codex-rs/target
-          key: ios-kit-${{ hashFiles('codex-rs/Cargo.lock') }}-${{ github.sha }}
+          key: ios-kit-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            ios-kit-${{ hashFiles('codex-rs/Cargo.lock') }}-
-            ios-kit-
-      - name: Build for iPhone
+            ios-kit-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock') }}-
+            ios-kit-${{ matrix.target }}-
+      - name: Build the static library
         working-directory: codex-rs
-        run: cargo build --locked --release -p codex-ios-kit --lib --target aarch64-apple-ios
-      - name: Build for the simulator
-        working-directory: codex-rs
-        run: cargo build --locked --release -p codex-ios-kit --lib --target aarch64-apple-ios-sim
+        run: |
+          set -euo pipefail
+          # rustc names the libraries the app must link as it builds the
+          # static library, so the kit itself is always compiled again.
+          touch ios-kit/src/lib.rs
+          cargo rustc --locked --release -p codex-ios-kit --lib --target ${{ matrix.target }} -- --print native-static-libs 2>&1 \
+            | tee "$RUNNER_TEMP/build.log"
+          mkdir -p "$RUNNER_TEMP/kit"
+          grep 'native-static-libs:' "$RUNNER_TEMP/build.log" | sed 's/.*native-static-libs: //' | tee "$RUNNER_TEMP/kit/native-static-libs.txt"
+          test -s "$RUNNER_TEMP/kit/native-static-libs.txt"
+          library="target/${{ matrix.target }}/release/libcodex_ios_kit.a"
+          nm -gU "$library" 2>/dev/null | grep -q '_codex_ios_kit_start' || { echo "codex_ios_kit_start is missing from $library" >&2; exit 1; }
+          cp "$library" "$RUNNER_TEMP/kit/"
+          ls -l "$RUNNER_TEMP/kit"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always()
         with:
@@ -60,25 +77,36 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             codex-rs/target
-          key: ios-kit-${{ hashFiles('codex-rs/Cargo.lock') }}-${{ github.sha }}
-      - name: Libraries the app links
-        working-directory: codex-rs
-        run: |
-          set -euo pipefail
-          cargo rustc --locked --release -p codex-ios-kit --lib --crate-type staticlib --target aarch64-apple-ios -- --print native-static-libs 2>&1 \
-            | grep 'native-static-libs:' | sed 's/.*native-static-libs: //' | tee "$RUNNER_TEMP/native-static-libs.txt"
-          test -s "$RUNNER_TEMP/native-static-libs.txt"
+          key: ios-kit-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock') }}-${{ github.sha }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kit-${{ matrix.target }}
+          path: ${{ runner.temp }}/kit
+          if-no-files-found: error
+          retention-days: 3
+
+  assemble:
+    name: CodexKit.xcframework
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: kit-*
+          path: ${{ runner.temp }}/kits
       - name: Assemble CodexKit.xcframework
         run: |
           set -euo pipefail
-          for target in aarch64-apple-ios aarch64-apple-ios-sim; do
-            library="codex-rs/target/$target/release/libcodex_ios_kit.a"
-            ls -l "$library"
-            nm -gU "$library" 2>/dev/null | grep -q '_codex_ios_kit_start' || { echo "codex_ios_kit_start is missing from $library" >&2; exit 1; }
-          done
+          kits="$RUNNER_TEMP/kits"
+          ls -lR "$kits"
+          cp "$kits/kit-aarch64-apple-ios/native-static-libs.txt" "$RUNNER_TEMP/native-static-libs.txt"
           xcodebuild -create-xcframework \
-            -library codex-rs/target/aarch64-apple-ios/release/libcodex_ios_kit.a -headers codex-rs/ios-kit/include \
-            -library codex-rs/target/aarch64-apple-ios-sim/release/libcodex_ios_kit.a -headers codex-rs/ios-kit/include \
+            -library "$kits/kit-aarch64-apple-ios/libcodex_ios_kit.a" -headers codex-rs/ios-kit/include \
+            -library "$kits/kit-aarch64-apple-ios-sim/libcodex_ios_kit.a" -headers codex-rs/ios-kit/include \
             -output "$RUNNER_TEMP/CodexKit.xcframework"
           (cd "$RUNNER_TEMP" && zip -qry CodexKit.xcframework.zip CodexKit.xcframework)
           ls -l "$RUNNER_TEMP/CodexKit.xcframework.zip"

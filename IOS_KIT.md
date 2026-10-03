@@ -17,7 +17,8 @@ and the `codex-code-mode-host` it starts cannot run on an iPhone.
   JSON-RPC in WebSocket frames as `codex app-server --listen unix://PATH`.
 
 Commands still cannot run: every attempt to start a program fails on iOS as
-it does for any app.
+it does for any app, so the kit turns the shell tools off (`shell_tool`,
+`unified_exec` and `shell_snapshot`, after the app's own overrides).
 
 ## Changes from upstream
 
@@ -27,12 +28,22 @@ it does for any app.
    which only its own Bazel mirror builds. V8 152 carries ICU 78, so the ICU
    data moves to `deno_core_icudata` 0.78.0.
 2. `codex-rs/ios-kit`: the C API in `include/codex_ios_kit.h`
-   (`codex_ios_kit_start`, `codex_ios_kit_free`) and
+   (`codex_ios_kit_start` and `codex_ios_kit_free`; `codex_ios_kit_connect`,
+   `codex_ios_kit_send` and `codex_ios_kit_disconnect`, which carry the App
+   Server's messages so the app needs no WebSocket client) and
    `codex-ios-kit-probe`, which runs the kit on Linux with `execve` refused by
    seccomp, as iOS refuses it, and talks to the App Server over its socket.
-3. Upstream's `.github` (CI, release and dependency automation) is removed;
+   iOS gives an app no memory it may both write and run, so the kit starts V8
+   with `--jitless` before the code-mode host.
+3. `codex-http-client` adds Mozilla's root certificates (`webpki-roots`) to
+   the rustls configuration of Codex's WebSocket connections on iOS: iOS gives
+   apps no readable list of the system's roots, so `rustls-native-certs` finds
+   none there. HTTPS requests keep reqwest's default, the system's TLS.
+4. Upstream's `.github` (CI, release and dependency automation) is removed;
    `.github/workflows/ios-kit.yml` builds `CodexKit.xcframework` for iPhone
-   and the arm64 simulator on a macOS runner.
+   and the arm64 simulator, on two macOS runners at once, without
+   cross-crate LTO or line tables: the app's linker removes what it does not
+   use.
 
 ## Build
 
