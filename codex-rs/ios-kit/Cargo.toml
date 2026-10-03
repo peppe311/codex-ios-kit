@@ -1,0 +1,35 @@
+[package]
+name = "codex-ios-kit"
+description = "Runs the Codex App Server and its code-mode host inside an iOS app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_ios_kit"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "codex-ios-kit-probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+codex-app-server = { workspace = true }
+codex-arg0 = { workspace = true }
+codex-async-utils = { workspace = true }
+codex-code-mode-host = { path = "../code-mode-host" }
+codex-config = { workspace = true }
+codex-protocol = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
+codex-utils-cli = { workspace = true }
+codex-websocket-auth = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { workspace = true }
+url = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }

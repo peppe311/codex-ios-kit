@@ -1,0 +1,72 @@
+name: iOS kit
+
+# Builds codex-rs/ios-kit, the Codex App Server and code-mode host as a static
+# library for iOS devices and the arm64 simulator, and keeps them as
+# CodexKit.xcframework (see IOS_KIT.md).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-kit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: CodexKit.xcframework
+    runs-on: macos-26
+    timeout-minutes: 240
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust for iOS
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --target aarch64-apple-ios --target aarch64-apple-ios-sim
+          rustup default 1.95.0
+          rustc --version
+          xcodebuild -version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            codex-rs/target
+          key: ios-kit-${{ hashFiles('codex-rs/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ios-kit-${{ hashFiles('codex-rs/Cargo.lock') }}-
+            ios-kit-
+      - name: Build for iPhone
+        working-directory: codex-rs
+        run: cargo build --locked --release -p codex-ios-kit --lib --target aarch64-apple-ios
+      - name: Build for the simulator
+        working-directory: codex-rs
+        run: cargo build --locked --release -p codex-ios-kit --lib --target aarch64-apple-ios-sim
+      - name: Assemble CodexKit.xcframework
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-ios aarch64-apple-ios-sim; do
+            library="codex-rs/target/$target/release/libcodex_ios_kit.a"
+            ls -l "$library"
+            nm -gU "$library" 2>/dev/null | grep -q '_codex_ios_kit_start' || { echo "codex_ios_kit_start is missing from $library" >&2; exit 1; }
+          done
+          xcodebuild -create-xcframework \
+            -library codex-rs/target/aarch64-apple-ios/release/libcodex_ios_kit.a -headers codex-rs/ios-kit/include \
+            -library codex-rs/target/aarch64-apple-ios-sim/release/libcodex_ios_kit.a -headers codex-rs/ios-kit/include \
+            -output "$RUNNER_TEMP/CodexKit.xcframework"
+          (cd "$RUNNER_TEMP" && zip -qry CodexKit.xcframework.zip CodexKit.xcframework)
+          ls -l "$RUNNER_TEMP/CodexKit.xcframework.zip"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: CodexKit.xcframework
+          path: ${{ runner.temp }}/CodexKit.xcframework.zip
+          if-no-files-found: error
+          retention-days: 30

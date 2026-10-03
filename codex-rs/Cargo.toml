@@ -13,6 +13,7 @@ members = [
     "attachment-store",
     "async-utils",
     "app-server",
+    "ios-kit",
     "app-server-transport",
     "app-server-daemon",
     "app-server-client",

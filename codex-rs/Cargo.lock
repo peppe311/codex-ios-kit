@@ -3733,6 +3733,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-ios-kit"
+version = "0.160.0"
+dependencies = [
+ "anyhow",
+ "codex-app-server",
+ "codex-arg0",
+ "codex-async-utils",
+ "codex-code-mode-host",
+ "codex-config",
+ "codex-protocol",
+ "codex-utils-absolute-path",
+ "codex-utils-cli",
+ "codex-websocket-auth",
+ "futures",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
 name = "codex-keyring-store"
 version = "0.160.0"
 dependencies = [
