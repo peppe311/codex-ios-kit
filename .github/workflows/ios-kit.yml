@@ -20,6 +20,8 @@ jobs:
   build:
     name: Build for ${{ matrix.target }}
     strategy:
+      # Each target keeps what it compiled even when the other fails.
+      fail-fast: false
       matrix:
         target: [aarch64-apple-ios, aarch64-apple-ios-sim]
     runs-on: macos-26
@@ -66,7 +68,9 @@ jobs:
           grep 'native-static-libs:' "$RUNNER_TEMP/build.log" | sed 's/.*native-static-libs: //' | tee "$RUNNER_TEMP/kit/native-static-libs.txt"
           test -s "$RUNNER_TEMP/kit/native-static-libs.txt"
           library="target/${{ matrix.target }}/release/libcodex_ios_kit.a"
-          nm -gU "$library" 2>/dev/null | grep -q '_codex_ios_kit_start' || { echo "codex_ios_kit_start is missing from $library" >&2; exit 1; }
+          # Read in full first: grep -q would stop nm early, which pipefail reports as a failure.
+          nm -gU "$library" > "$RUNNER_TEMP/symbols.txt" 2>/dev/null || true
+          grep -q '_codex_ios_kit_start' "$RUNNER_TEMP/symbols.txt" || { echo "codex_ios_kit_start is missing from $library" >&2; exit 1; }
           cp "$library" "$RUNNER_TEMP/kit/"
           ls -l "$RUNNER_TEMP/kit"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
